@@ -2,6 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 // ── Load .env if present (zero dependencies) ───────────
 function loadEnv(path = './.env') {
@@ -29,10 +30,24 @@ const { ParallelTrainer } = require('./trainer');
 const TOKENIZER_PATH = './training/tokenizer.json';
 const BASE_WEIGHTS_PATH = './weights.bin';
 const GHOST_DIR = './ghosts';
+const CHECKPOINT_DIR = './checkpoints';
+const CHECKPOINT_STATE = `${CHECKPOINT_DIR}/base_training_state.json`;
+const CHECKPOINT_WEIGHTS = `${CHECKPOINT_DIR}/base_weights_checkpoint.bin`;
 
-// ── Toggle this ────────────────────────────────────────
-// true = 1.1M params, false = 4.3M params, slow, needs lots of data
-const TEST_MODE = process.env.TEST_MODE !== 'true';
+// ── Env toggles ────────────────────────────────────────
+const TEST_MODE = process.env.TEST_MODE !== 'false';
+const RESUME = process.env.RESUME === 'true';
+
+// ── Training state (shared across endpoints) ───────────
+const trainingStatus = {
+  isTraining: false,
+  shouldPause: false,
+  currentEpoch: 0,
+  currentBatch: 0,
+  totalBatches: 0,
+  currentLoss: 0,
+  etaSeconds: 0,
+};
 
 // ── Init tokenizer ─────────────────────────────────────
 const tokenizer = new BPETokenizer(512);
@@ -58,6 +73,7 @@ console.log(
   `Mode: ${TEST_MODE ? 'TEST (small, fast)' : 'FULL (large, data-hungry)'}`,
 );
 console.log(`Workers: ${process.env.WORKERS || os.cpus().length}`);
+console.log(`Resume: ${RESUME}`);
 console.log('');
 
 try {
@@ -71,6 +87,36 @@ const baseTrainer = new ParallelTrainer(
   baseModel,
   parseInt(process.env.WORKERS || os.cpus().length, 10),
 );
+
+// ── Checkpoint helpers ─────────────────────────────────
+function saveCheckpoint(state) {
+  if (!fs.existsSync(CHECKPOINT_DIR)) fs.mkdirSync(CHECKPOINT_DIR);
+  fs.writeFileSync(CHECKPOINT_STATE, JSON.stringify(state, null, 2));
+  baseModel.saveWeights(CHECKPOINT_WEIGHTS);
+}
+
+function loadCheckpoint() {
+  if (!fs.existsSync(CHECKPOINT_STATE)) return null;
+  if (!fs.existsSync(CHECKPOINT_WEIGHTS)) return null;
+  try {
+    const state = JSON.parse(fs.readFileSync(CHECKPOINT_STATE, 'utf8'));
+    baseModel.loadWeights(CHECKPOINT_WEIGHTS);
+    return state;
+  } catch (e) {
+    console.log('[CHECKPOINT] Corrupted checkpoint, starting fresh.');
+    deleteCheckpoint();
+    return null;
+  }
+}
+
+function deleteCheckpoint() {
+  try {
+    fs.unlinkSync(CHECKPOINT_STATE);
+  } catch (e) {}
+  try {
+    fs.unlinkSync(CHECKPOINT_WEIGHTS);
+  } catch (e) {}
+}
 
 // ── Init ghosts ────────────────────────────────────────
 const ghosts = new Map();
@@ -133,6 +179,7 @@ function json(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+// ── HTTP Server ────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(200, {
@@ -150,6 +197,31 @@ const server = http.createServer((req, res) => {
   req.on('data', (chunk) => (body += chunk));
   req.on('end', async () => {
     const data = body ? JSON.parse(body) : {};
+
+    // GET /training-status
+    if (parsed.pathname === '/training-status' && req.method === 'GET') {
+      return json(res, 200, {
+        isTraining: trainingStatus.isTraining,
+        shouldPause: trainingStatus.shouldPause,
+        currentEpoch: trainingStatus.currentEpoch,
+        currentBatch: trainingStatus.currentBatch,
+        totalBatches: trainingStatus.totalBatches,
+        currentLoss: trainingStatus.currentLoss,
+        etaSeconds: trainingStatus.etaSeconds,
+      });
+    }
+
+    // POST /pause-training
+    if (parsed.pathname === '/pause-training' && req.method === 'POST') {
+      if (!trainingStatus.isTraining) {
+        return json(res, 409, { error: 'No training in progress' });
+      }
+      trainingStatus.shouldPause = true;
+      return json(res, 200, {
+        status: 'pause_requested',
+        message: 'Training will pause after the current batch completes.',
+      });
+    }
 
     // POST /speak
     if (parsed.pathname === '/speak' && req.method === 'POST') {
@@ -190,8 +262,15 @@ const server = http.createServer((req, res) => {
       return json(res, 200, g.history);
     }
 
-    // POST /train — train the BASE model
+    // POST /train — train the BASE model (with resume support)
     if (parsed.pathname === '/train' && req.method === 'POST') {
+      if (trainingStatus.isTraining) {
+        return json(res, 409, {
+          error:
+            'Training already in progress. Use /pause-training first or wait.',
+        });
+      }
+
       let text = data.text || '';
 
       if (data.file) {
@@ -207,6 +286,7 @@ const server = http.createServer((req, res) => {
 
       if (!text) return json(res, 400, { error: 'Provide text or file' });
 
+      // Train tokenizer on first run
       if (tokenizer.merges.length === 0) {
         console.log('[TRAIN] Training tokenizer on provided text...');
         tokenizer.train(text, tokenizer.vocabSize - 256);
@@ -240,58 +320,176 @@ const server = http.createServer((req, res) => {
       const batchesPerEpoch = Math.ceil(sequences.length / batchSize);
       const totalBatches = batchesPerEpoch * epochs;
 
+      // ── Resume logic ─────────────────────────────────
+      let checkpoint = null;
+      let nextGlobalBatch = 0;
+      let totalLoss = 0;
+      let steps = 0;
+      let startTime = Date.now();
+      let resuming = false;
+
+      if (RESUME) {
+        checkpoint = loadCheckpoint();
+      }
+
+      if (checkpoint && checkpoint.status === 'paused') {
+        // Validate checkpoint matches current request
+        const configMatch =
+          checkpoint.config &&
+          checkpoint.config.file === (data.file || '') &&
+          checkpoint.config.textLength === text.length &&
+          checkpoint.config.batchSize === batchSize &&
+          checkpoint.config.stride === effectiveStride &&
+          checkpoint.config.seqLen === seqLen;
+
+        if (
+          configMatch &&
+          checkpoint.nextGlobalBatch < checkpoint.config.totalBatches
+        ) {
+          console.log(
+            `[TRAIN] Resuming from checkpoint: epoch ${checkpoint.progress.epoch + 1}, batch ${checkpoint.progress.batch + 1}`,
+          );
+          nextGlobalBatch = checkpoint.nextGlobalBatch;
+          totalLoss = checkpoint.totalLoss || 0;
+          steps = checkpoint.steps || 0;
+          startTime = checkpoint.startTime || Date.now();
+          resuming = true;
+        } else {
+          console.log(
+            '[TRAIN] Checkpoint mismatch or completed. Starting fresh.',
+          );
+          deleteCheckpoint();
+        }
+      } else if (!RESUME && checkpoint) {
+        console.log('[TRAIN] RESUME=false, deleting old checkpoint.');
+        deleteCheckpoint();
+      }
+
+      if (!resuming) {
+        deleteCheckpoint();
+      }
+
       console.log(
         `[TRAIN] ${epochs} epochs | ${sequences.length.toLocaleString()} sequences | batch=${batchSize} | stride=${effectiveStride} | ${totalBatches} total batches`,
       );
-      console.log(`[TRAIN] Starting training... (logging every batch)\n`);
-
-      let totalLoss = 0;
-      let steps = 0;
-      const startTime = Date.now();
-      let batchStart = startTime;
-
-      for (let e = 0; e < epochs; e++) {
-        let epochLoss = 0;
-
-        for (let i = 0; i < sequences.length; i += batchSize) {
-          const batch = sequences.slice(i, i + batchSize);
-          const loss = await baseTrainer.trainBatch(
-            batch.map((s) => s.inp),
-            batch.map((s) => s.tgt),
-          );
-
-          totalLoss += loss * batch.length;
-          steps += batch.length;
-          epochLoss += loss * batch.length;
-
-          const globalBatch =
-            e * batchesPerEpoch + Math.floor(i / batchSize) + 1;
-          const now = Date.now();
-          const batchMs = now - batchStart;
-          batchStart = now;
-          const elapsedSec = ((now - startTime) / 1000).toFixed(1);
-          const etaSec = (
-            ((totalBatches - globalBatch) * batchMs) /
-            1000
-          ).toFixed(0);
-
-          console.log(
-            `[TRAIN] ${globalBatch}/${totalBatches} | Epoch ${e + 1}/${epochs} | ` +
-              `Loss: ${loss.toFixed(4)} | Batch: ${batchMs}ms | Elapsed: ${elapsedSec}s | ETA: ${etaSec}s`,
-          );
-        }
-
+      if (resuming) {
         console.log(
-          `\n[TRAIN] Epoch ${e + 1}/${epochs} complete | Avg loss: ${(epochLoss / sequences.length).toFixed(4)}\n`,
+          `[TRAIN] Resuming at global batch ${nextGlobalBatch}/${totalBatches}`,
         );
       }
+      console.log(`[TRAIN] Starting training... (logging every batch)\n`);
 
+      trainingStatus.isTraining = true;
+      trainingStatus.shouldPause = false;
+      trainingStatus.totalBatches = totalBatches;
+
+      let batchStart = Date.now();
+      let paused = false;
+
+      try {
+        for (let e = 0; e < epochs; e++) {
+          let epochLoss = 0;
+
+          for (let b = 0; b < batchesPerEpoch; b++) {
+            const globalBatch = e * batchesPerEpoch + b;
+
+            // Skip already-completed batches when resuming
+            if (globalBatch < nextGlobalBatch) continue;
+
+            // Check pause request
+            if (trainingStatus.shouldPause) {
+              console.log(
+                `[TRAIN] Pause requested at batch ${globalBatch}. Saving checkpoint...`,
+              );
+              saveCheckpoint({
+                status: 'paused',
+                config: {
+                  file: data.file || '',
+                  textLength: text.length,
+                  epochs,
+                  batchSize,
+                  stride: effectiveStride,
+                  seqLen,
+                  totalBatches,
+                },
+                progress: { epoch: e, batch: b },
+                nextGlobalBatch: globalBatch,
+                totalLoss,
+                steps,
+                startTime,
+              });
+              paused = true;
+              break;
+            }
+
+            const i = b * batchSize;
+            const batch = sequences.slice(i, i + batchSize);
+            const loss = await baseTrainer.trainBatch(
+              batch.map((s) => s.inp),
+              batch.map((s) => s.tgt),
+            );
+
+            totalLoss += loss * batch.length;
+            steps += batch.length;
+            epochLoss += loss * batch.length;
+
+            // Update live status
+            trainingStatus.currentEpoch = e + 1;
+            trainingStatus.currentBatch = globalBatch + 1;
+            trainingStatus.currentLoss = loss;
+            const now = Date.now();
+            const batchMs = now - batchStart;
+            batchStart = now;
+            const elapsedSec = (now - startTime) / 1000;
+            const remainingBatches = totalBatches - globalBatch - 1;
+            trainingStatus.etaSeconds = Math.round(
+              (remainingBatches * batchMs) / 1000,
+            );
+
+            const elapsedStr = elapsedSec.toFixed(1);
+            const etaStr = trainingStatus.etaSeconds.toFixed(0);
+
+            console.log(
+              `[TRAIN] ${globalBatch + 1}/${totalBatches} | Epoch ${e + 1}/${epochs} | ` +
+                `Loss: ${loss.toFixed(4)} | Batch: ${batchMs}ms | Elapsed: ${elapsedStr}s | ETA: ${etaStr}s`,
+            );
+          }
+
+          if (paused) break;
+
+          console.log(
+            `\n[TRAIN] Epoch ${e + 1}/${epochs} complete | Avg loss: ${(epochLoss / sequences.length).toFixed(4)}\n`,
+          );
+        }
+      } finally {
+        trainingStatus.isTraining = false;
+        trainingStatus.shouldPause = false;
+      }
+
+      if (paused) {
+        return json(res, 200, {
+          status: 'paused',
+          message:
+            'Training paused. Call POST /train to resume (with RESUME=true).',
+          checkpoint: CHECKPOINT_STATE,
+          progress: {
+            nextGlobalBatch,
+            totalBatches,
+            totalLoss: totalLoss / (steps || 1),
+          },
+        });
+      }
+
+      // Training completed
       baseModel.saveWeights(BASE_WEIGHTS_PATH);
       const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(
         `[TRAIN] Done in ${totalTime}s. Saved base weights to ${BASE_WEIGHTS_PATH}`,
       );
 
+      deleteCheckpoint();
+
+      // Sync into ghosts
       for (const [name, g] of ghosts) {
         g.model.wte.set(baseModel.wte);
         g.model.wpe.set(baseModel.wpe);
@@ -312,6 +510,7 @@ const server = http.createServer((req, res) => {
       }
 
       return json(res, 200, {
+        status: 'completed',
         steps,
         avgLoss: totalLoss / (steps || 1),
         source: data.file || 'inline text',
@@ -368,6 +567,7 @@ const server = http.createServer((req, res) => {
         mode: TEST_MODE
           ? 'TEST (1.1M params, fast)'
           : 'FULL (4.3M params, data-hungry)',
+        resume: RESUME,
         params: {
           vocabSize: tokenizer.vocabSize,
           dModel: baseModel.dModel,
@@ -380,6 +580,8 @@ const server = http.createServer((req, res) => {
         endpoints: {
           'POST /train':
             'Train base model (also builds tokenizer on first run)',
+          'POST /pause-training': 'Request graceful pause of running training',
+          'GET /training-status': 'Live training progress',
           'POST /train-ghost': 'Train personality weights for a specific ghost',
           'POST /speak': 'Talk to a ghost (uses personal model + history)',
           'GET /ghosts': 'List ghosts',
@@ -406,8 +608,20 @@ server.listen(3000, () =>
 );
 
 process.on('SIGINT', () => {
-  console.log('\nSaving state...');
-  baseTrainer.terminate();
-  saveGhosts();
-  process.exit(0);
+  console.log('\nSIGINT received.');
+  if (trainingStatus.isTraining) {
+    console.log('Training is running. Requesting pause to save checkpoint...');
+    trainingStatus.shouldPause = true;
+    // Give the loop one batch worth of time to save checkpoint, then force exit
+    setTimeout(() => {
+      console.log('Forcing exit.');
+      baseTrainer.terminate();
+      saveGhosts();
+      process.exit(0);
+    }, 30000); // 30s grace period
+  } else {
+    baseTrainer.terminate();
+    saveGhosts();
+    process.exit(0);
+  }
 });
