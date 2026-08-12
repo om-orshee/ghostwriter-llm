@@ -2,7 +2,6 @@
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const crypto = require('crypto');
 
 // ── Load .env if present (zero dependencies) ───────────
 function loadEnv(path = './.env') {
@@ -37,6 +36,7 @@ const CHECKPOINT_WEIGHTS = `${CHECKPOINT_DIR}/base_weights_checkpoint.bin`;
 // ── Env toggles ────────────────────────────────────────
 const TEST_MODE = process.env.TEST_MODE !== 'false';
 const RESUME = process.env.RESUME === 'true';
+const CHECKPOINT_EVERY = parseInt(process.env.CHECKPOINT_EVERY || '10', 10);
 
 // ── Training state (shared across endpoints) ───────────
 const trainingStatus = {
@@ -74,6 +74,7 @@ console.log(
 );
 console.log(`Workers: ${process.env.WORKERS || os.cpus().length}`);
 console.log(`Resume: ${RESUME}`);
+console.log(`Checkpoint every: ${CHECKPOINT_EVERY} batches`);
 console.log('');
 
 try {
@@ -333,7 +334,6 @@ const server = http.createServer((req, res) => {
       }
 
       if (checkpoint && checkpoint.status === 'paused') {
-        // Validate checkpoint matches current request
         const configMatch =
           checkpoint.config &&
           checkpoint.config.file === (data.file || '') &&
@@ -453,6 +453,27 @@ const server = http.createServer((req, res) => {
               `[TRAIN] ${globalBatch + 1}/${totalBatches} | Epoch ${e + 1}/${epochs} | ` +
                 `Loss: ${loss.toFixed(4)} | Batch: ${batchMs}ms | Elapsed: ${elapsedStr}s | ETA: ${etaStr}s`,
             );
+
+            // Auto-checkpoint every N batches as a safety net
+            if ((globalBatch + 1) % CHECKPOINT_EVERY === 0) {
+              saveCheckpoint({
+                status: 'paused',
+                config: {
+                  file: data.file || '',
+                  textLength: text.length,
+                  epochs,
+                  batchSize,
+                  stride: effectiveStride,
+                  seqLen,
+                  totalBatches,
+                },
+                progress: { epoch: e, batch: b + 1 },
+                nextGlobalBatch: globalBatch + 1,
+                totalLoss,
+                steps,
+                startTime,
+              });
+            }
           }
 
           if (paused) break;
@@ -473,7 +494,7 @@ const server = http.createServer((req, res) => {
             'Training paused. Call POST /train to resume (with RESUME=true).',
           checkpoint: CHECKPOINT_STATE,
           progress: {
-            nextGlobalBatch,
+            nextGlobalBatch: trainingStatus.currentBatch,
             totalBatches,
             totalLoss: totalLoss / (steps || 1),
           },
@@ -607,18 +628,38 @@ server.listen(3000, () =>
   console.log('Ghostwriter running on http://localhost:3000'),
 );
 
+// ── Robust SIGINT handler ───────────────────────────────
+let shuttingDown = false;
+
 process.on('SIGINT', () => {
+  if (shuttingDown) {
+    console.log('\nSecond SIGINT — forcing immediate exit.');
+    process.exit(1);
+  }
+  shuttingDown = true;
+
   console.log('\nSIGINT received.');
   if (trainingStatus.isTraining) {
     console.log('Training is running. Requesting pause to save checkpoint...');
     trainingStatus.shouldPause = true;
-    // Give the loop one batch worth of time to save checkpoint, then force exit
+
+    // Poll until training loop finishes its current batch and saves checkpoint
+    const poll = setInterval(() => {
+      if (!trainingStatus.isTraining) {
+        clearInterval(poll);
+        console.log('Checkpoint saved. Exiting cleanly.');
+        baseTrainer.terminate();
+        saveGhosts();
+        process.exit(0);
+      }
+    }, 100);
+
+    // Absolute safety: force exit after 60s no matter what
     setTimeout(() => {
-      console.log('Forcing exit.');
-      baseTrainer.terminate();
-      saveGhosts();
+      clearInterval(poll);
+      console.log('Timeout reached. Forcing exit.');
       process.exit(0);
-    }, 30000); // 30s grace period
+    }, 60000);
   } else {
     baseTrainer.terminate();
     saveGhosts();
