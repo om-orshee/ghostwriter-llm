@@ -5,8 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "generate": "node generate_training.js",
-    "download": "node download_books.js"
+    "generate": "node generate_synthetic_data.js",
+    "download": "node download_books.js",
+    "clean": "rm -f weights.bin && rm -rf checkpoints ghosts",
+    "clean-start": "npm run clean && npm start"
   },
   "keywords": [
     "llm",

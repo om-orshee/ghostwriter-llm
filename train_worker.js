@@ -56,6 +56,9 @@ parentPort.on('message', (msg) => {
   if (msg.type === 'weights') {
     if (!model) return;
     model._setAllWeights(msg.weights);
+    console.log(
+      `[WORKER] Weight sync received, wte[0]=${model.wte[0].toFixed(6)}`,
+    );
   }
 
   if (msg.type === 'compute') {

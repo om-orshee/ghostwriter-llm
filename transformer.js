@@ -237,7 +237,6 @@ class Transformer {
     this.t++;
     const b1t = Math.pow(this.beta1, this.t);
     const b2t = Math.pow(this.beta2, this.t);
-    const lr = (this.lr * Math.sqrt(1 - b2t)) / (1 - b1t);
 
     const adamStep = (w, dw, m, v) => {
       for (let i = 0; i < w.length; i++) {
@@ -245,7 +244,7 @@ class Transformer {
         v[i] = this.beta2 * v[i] + (1 - this.beta2) * dw[i] * dw[i];
         const mHat = m[i] / (1 - b1t);
         const vHat = v[i] / (1 - b2t);
-        w[i] -= (lr * mHat) / (Math.sqrt(vHat) + this.eps);
+        w[i] -= (this.lr * mHat) / (Math.sqrt(vHat) + this.eps);
       }
     };
 
