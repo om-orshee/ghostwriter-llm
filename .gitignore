@@ -1,0 +1,22 @@
+//.gitignore
+# Training data (large, regenerable)
+training/*.txt
+training/*.bin
+
+# Model weights (large, trained artifacts)
+weights.bin
+ghosts/*.bin
+ghosts/*.json
+
+# Node
+node_modules/
+npm-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

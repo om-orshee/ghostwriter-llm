@@ -1,0 +1,27 @@
+{
+  "name": "ghostwriter",
+  "version": "1.0.0",
+  "description": "Smallest possible multi-personality language model built from scratch in pure JavaScript",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "generate": "node generate_training.js",
+    "download": "node download_books.js"
+  },
+  "keywords": [
+    "llm",
+    "lstm",
+    "neural-network",
+    "ai",
+    "chatbot",
+    "personality",
+    "from-scratch",
+    "javascript",
+    "nodejs"
+  ],
+  "author": "om-orshee",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
