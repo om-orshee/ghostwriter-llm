@@ -25,7 +25,7 @@ node server.js
 # 3. Train tokenizer + base model
 curl -X POST http://localhost:3000/train \
   -H "Content-Type: application/json" \
-  -d '{"file":"./training/base_corpus.txt","epochs":5,"batchSize":16}'
+  -d '{"file":"./training/corpus_small.txt","epochs":5,"batchSize":16}'
 
 # 4. Train personalities
 curl -X POST http://localhost:3000/train-ghost \

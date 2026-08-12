@@ -1,5 +1,4 @@
-//tokenizer.js
-// tokenizer.js — Byte-level BPE tokenizer in pure Node.js
+// tokenizer.js
 const fs = require('fs');
 
 class BPETokenizer {

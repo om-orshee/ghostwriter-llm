@@ -1,14 +1,38 @@
 // server.js
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
+
+// ── Load .env if present (zero dependencies) ───────────
+function loadEnv(path = './.env') {
+  if (!fs.existsSync(path)) return;
+  const text = fs.readFileSync(path, 'utf8');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (key && process.env[key] === undefined) {
+      process.env[key] = val;
+    }
+  }
+}
+loadEnv();
+
 const Transformer = require('./transformer');
 const { BPETokenizer } = require('./tokenizer');
 const { Ghost } = require('./ghost');
 const { ParallelTrainer } = require('./trainer');
 
-const TOKENIZER_PATH = './tokenizer.json';
+const TOKENIZER_PATH = './training/tokenizer.json';
 const BASE_WEIGHTS_PATH = './weights.bin';
 const GHOST_DIR = './ghosts';
+
+// ── Toggle this ────────────────────────────────────────
+const TEST_MODE = true; // true = 1.1M params, fast, overfits small data
+// false = 4.3M params, slow, needs lots of data
 
 // ── Init tokenizer ─────────────────────────────────────
 const tokenizer = new BPETokenizer(512);
@@ -23,22 +47,18 @@ if (fs.existsSync(TOKENIZER_PATH)) {
 }
 
 // ── Init base model ────────────────────────────────────
-const baseModel = new Transformer(
-  0.001, // lr
-  tokenizer.vocabSize,
-  256, // dModel
-  6, // nLayers
-  8, // nHeads
-  768, // dFF
-  256, // maxSeqLen
-);
+const baseModel = TEST_MODE
+  ? new Transformer(0.001, 512, 128, 4, 4, 512, 128) // ~1.1M params
+  : new Transformer(0.001, 512, 256, 6, 8, 768, 256); // ~4.3M params
 
 console.log(
   `Transformer initialized: ${(baseModel.paramCount() / 1e6).toFixed(2)}M params`,
 );
 console.log(
-  'WARNING: Pure-JS transformer training is slow. Expect ~10-60s per batch on CPU.\n',
+  `Mode: ${TEST_MODE ? 'TEST (small, fast)' : 'FULL (large, data-hungry)'}`,
 );
+console.log(`Workers: ${process.env.WORKERS || os.cpus().length}`);
+console.log('');
 
 try {
   baseModel.loadWeights(BASE_WEIGHTS_PATH);
@@ -47,10 +67,10 @@ try {
   console.log('No base weights found. Run POST /train with text first.');
 }
 
-// ── Init parallel trainer ─────────────────────────────
-// add 2nd argument to limit workers, e.g. new ParallelTrainer(baseModel, 16)
-// else it defaults to os.cpus().length
-const baseTrainer = new ParallelTrainer(baseModel);
+const baseTrainer = new ParallelTrainer(
+  baseModel,
+  parseInt(process.env.WORKERS || os.cpus().length, 10),
+);
 
 // ── Init ghosts ────────────────────────────────────────
 const ghosts = new Map();
@@ -194,9 +214,9 @@ const server = http.createServer((req, res) => {
         console.log(`[TRAIN] Tokenizer saved to ${TOKENIZER_PATH}`);
       }
 
-      const epochs = data.epochs || 5;
+      const epochs = data.epochs || (TEST_MODE ? 20 : 5);
       const batchSize = data.batchSize || 16;
-      const stride = data.stride || 64;
+      const stride = data.stride || (TEST_MODE ? 32 : 64);
       const seqLen = baseModel.maxSeqLen;
 
       const tokens = tokenizer.encode(text);
@@ -322,8 +342,8 @@ const server = http.createServer((req, res) => {
 
       if (!text) return json(res, 400, { error: 'Provide text or file' });
 
-      const epochs = data.epochs || 5;
-      const batchSize = data.batchSize || 16;
+      const epochs = data.epochs || 10;
+      const batchSize = data.batchSize || 8;
       console.log(
         `[TRAIN-GHOST] Training ${g.name}: ${epochs} epochs, batch=${batchSize}`,
       );
@@ -345,6 +365,9 @@ const server = http.createServer((req, res) => {
     if (parsed.pathname === '/' && req.method === 'GET') {
       return json(res, 200, {
         info: 'Ghostwriter — Transformer + BPE + Personality Weights',
+        mode: TEST_MODE
+          ? 'TEST (1.1M params, fast)'
+          : 'FULL (4.3M params, data-hungry)',
         params: {
           vocabSize: tokenizer.vocabSize,
           dModel: baseModel.dModel,
@@ -366,9 +389,10 @@ const server = http.createServer((req, res) => {
         trainingTips: {
           stride: '64 = max speed, 32 = medium, 8 = slow but thorough',
           batchSize: '16 recommended for base, 8 for ghosts',
-          epochs: '3-5 for base, 5-10 for ghost personality',
-          warning:
-            'Each batch may take 10-60s in pure JS. Use smaller batchSize for faster feedback.',
+          epochs: TEST_MODE
+            ? '20+ for test mode (small data OK)'
+            : '50+ for full mode (needs MBs of text)',
+          data: 'Synthetic data is fine for testing. For real quality, feed books, Wikipedia, or code.',
         },
       });
     }

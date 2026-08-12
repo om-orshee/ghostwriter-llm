@@ -101,6 +101,11 @@ class Ghost {
     }
     reply = reply.trim();
 
+    // Fallback for untrained / empty generation
+    if (!reply) {
+      reply = '...';
+    }
+
     this.history.push(`User: ${userInput}`);
     this.history.push(`${this.name}: ${reply}`);
     if (this.history.length > this.historyLimit * 2) {

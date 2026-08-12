@@ -2,6 +2,7 @@
 # Training data (large, regenerable)
 training/*.txt
 training/*.bin
+training/tokenizer.json
 
 # Model weights (large, trained artifacts)
 weights.bin
