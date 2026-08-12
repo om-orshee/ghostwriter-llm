@@ -95,6 +95,9 @@ For faster iteration during testing, reduce the model in server.js:
 # Research Notes
 
 Isolation mechanism: Weight cloning at ghost creation + independent .train() calls. No LoRA or adapters — full parameter deltas.
+
 Tokenizer: Trained once during first /train call, then saved to tokenizer.json. Reused for all ghosts.
+
 Generation: KV-cache avoids recomputing past keys/values, making token-by-token generation roughly linear in sequence length instead of quadratic.
+
 Future path: Quantization (int8 weights), larger context via RoPE or ALiBi, or a tiny WASM SIMD kernel for matmul.
