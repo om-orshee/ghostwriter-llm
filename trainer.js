@@ -103,12 +103,12 @@ class ParallelTrainer {
       totalCount += r.count;
 
       // ── DIAGNOSTIC: sum of absolute gradients from this worker ──
-      let gradSum = 0;
-      for (let i = 0; i < r.gradients.length; i++)
-        gradSum += Math.abs(r.gradients[i]);
-      console.log(
-        `[TRAINER] Worker grad sum: ${gradSum.toFixed(2)} | loss: ${r.loss.toFixed(4)}`,
-      );
+      // let gradSum = 0;
+      // for (let i = 0; i < r.gradients.length; i++)
+      //   gradSum += Math.abs(r.gradients[i]);
+      // console.log(
+      //   `[TRAINER] Worker grad sum: ${gradSum.toFixed(2)} | loss: ${r.loss.toFixed(4)}`,
+      // );
 
       this._addGrads(r.gradients);
     }

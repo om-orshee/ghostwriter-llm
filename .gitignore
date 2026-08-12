@@ -1,7 +1,6 @@
 //.gitignore
 # Training data (large, regenerable)
 training/*.txt
-training/*.bin
 training/tokenizer.json
 
 # checkpoints (large, regenerable)
