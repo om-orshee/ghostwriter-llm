@@ -31,8 +31,8 @@ const BASE_WEIGHTS_PATH = './weights.bin';
 const GHOST_DIR = './ghosts';
 
 // ── Toggle this ────────────────────────────────────────
-const TEST_MODE = true; // true = 1.1M params, fast, overfits small data
-// false = 4.3M params, slow, needs lots of data
+// true = 1.1M params, false = 4.3M params, slow, needs lots of data
+const TEST_MODE = process.env.TEST_MODE !== 'true';
 
 // ── Init tokenizer ─────────────────────────────────────
 const tokenizer = new BPETokenizer(512);
