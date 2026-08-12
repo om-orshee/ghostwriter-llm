@@ -47,6 +47,9 @@ try {
   console.log('No base weights found. Run POST /train with text first.');
 }
 
+// ── Init parallel trainer ─────────────────────────────
+// add 2nd argument to limit workers, e.g. new ParallelTrainer(baseModel, 16)
+// else it defaults to os.cpus().length
 const baseTrainer = new ParallelTrainer(baseModel);
 
 // ── Init ghosts ────────────────────────────────────────
