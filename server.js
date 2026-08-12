@@ -63,8 +63,8 @@ if (fs.existsSync(TOKENIZER_PATH)) {
 
 // ── Init base model ────────────────────────────────────
 const baseModel = TEST_MODE
-  ? new Transformer(0.001, 512, 128, 4, 4, 512, 128) // ~1.1M params
-  : new Transformer(0.001, 512, 256, 6, 8, 768, 256); // ~4.3M params
+  ? new Transformer(0.0003, 512, 128, 4, 4, 512, 128) // ~1.1M params
+  : new Transformer(0.0003, 512, 256, 6, 8, 768, 256); // ~4.3M params
 
 console.log(
   `Transformer initialized: ${(baseModel.paramCount() / 1e6).toFixed(2)}M params`,

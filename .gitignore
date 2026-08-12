@@ -4,6 +4,10 @@ training/*.txt
 training/*.bin
 training/tokenizer.json
 
+# checkpoints (large, regenerable)
+checkpoints/*.bin
+checkpoints/*.json
+
 # Model weights (large, trained artifacts)
 weights.bin
 ghosts/*.bin

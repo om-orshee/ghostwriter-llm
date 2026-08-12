@@ -1,4 +1,4 @@
-//tests/test_overfit.js
+//tests/overfit.js
 const Transformer = require('../transformer');
 const { BPETokenizer } = require('../tokenizer');
 

@@ -27,6 +27,9 @@ class Transformer {
     nHeads = 8,
     dFF = 768,
     maxSeqLen = 256,
+    beta1 = 0.9,
+    beta2 = 0.999,
+    eps = 1e-8,
   ) {
     this.lr = learningRate;
     this.vocabSize = vocabSize;
@@ -36,6 +39,10 @@ class Transformer {
     this.dHead = Math.floor(dModel / nHeads);
     this.dFF = dFF;
     this.maxSeqLen = maxSeqLen;
+    this.beta1 = beta1;
+    this.beta2 = beta2;
+    this.eps = eps;
+    this.t = 0;
 
     // Embeddings
     this.wte = zeros(vocabSize * dModel);
@@ -90,6 +97,55 @@ class Transformer {
     this.dlnf_g = zeros(dModel);
     this.dlnf_b = zeros(dModel);
     this.dwlm = zeros(dModel * vocabSize);
+
+    // Adam first and second moments
+    this.mwte = zeros(vocabSize * dModel);
+    this.vwte = zeros(vocabSize * dModel);
+    this.mwpe = zeros(maxSeqLen * dModel);
+    this.vwpe = zeros(maxSeqLen * dModel);
+
+    this.mln1_g = [];
+    this.vln1_g = [];
+    this.mln1_b = [];
+    this.vln1_b = [];
+    this.mwqkv = [];
+    this.vwqkv = [];
+    this.mwo = [];
+    this.vwo = [];
+    this.mln2_g = [];
+    this.vln2_g = [];
+    this.mln2_b = [];
+    this.vln2_b = [];
+    this.mwup = [];
+    this.vwup = [];
+    this.mwdown = [];
+    this.vwdown = [];
+
+    for (let l = 0; l < nLayers; l++) {
+      this.mln1_g.push(zeros(dModel));
+      this.vln1_g.push(zeros(dModel));
+      this.mln1_b.push(zeros(dModel));
+      this.vln1_b.push(zeros(dModel));
+      this.mwqkv.push(zeros(dModel * 3 * dModel));
+      this.vwqkv.push(zeros(dModel * 3 * dModel));
+      this.mwo.push(zeros(dModel * dModel));
+      this.vwo.push(zeros(dModel * dModel));
+      this.mln2_g.push(zeros(dModel));
+      this.vln2_g.push(zeros(dModel));
+      this.mln2_b.push(zeros(dModel));
+      this.vln2_b.push(zeros(dModel));
+      this.mwup.push(zeros(dModel * dFF));
+      this.vwup.push(zeros(dModel * dFF));
+      this.mwdown.push(zeros(dFF * dModel));
+      this.vwdown.push(zeros(dFF * dModel));
+    }
+
+    this.mlnf_g = zeros(dModel);
+    this.vlnf_g = zeros(dModel);
+    this.mlnf_b = zeros(dModel);
+    this.vlnf_b = zeros(dModel);
+    this.mwlm = zeros(dModel * vocabSize);
+    this.vwlm = zeros(dModel * vocabSize);
 
     this.initWeights();
   }
@@ -178,24 +234,36 @@ class Transformer {
   }
 
   update() {
-    const step = (w, dw) => {
-      for (let i = 0; i < w.length; i++) w[i] -= this.lr * dw[i];
+    this.t++;
+    const b1t = Math.pow(this.beta1, this.t);
+    const b2t = Math.pow(this.beta2, this.t);
+    const lr = (this.lr * Math.sqrt(1 - b2t)) / (1 - b1t);
+
+    const adamStep = (w, dw, m, v) => {
+      for (let i = 0; i < w.length; i++) {
+        m[i] = this.beta1 * m[i] + (1 - this.beta1) * dw[i];
+        v[i] = this.beta2 * v[i] + (1 - this.beta2) * dw[i] * dw[i];
+        const mHat = m[i] / (1 - b1t);
+        const vHat = v[i] / (1 - b2t);
+        w[i] -= (lr * mHat) / (Math.sqrt(vHat) + this.eps);
+      }
     };
-    step(this.wte, this.dwte);
-    step(this.wpe, this.dwpe);
+
+    adamStep(this.wte, this.dwte, this.mwte, this.vwte);
+    adamStep(this.wpe, this.dwpe, this.mwpe, this.vwpe);
     for (let l = 0; l < this.nLayers; l++) {
-      step(this.ln1_g[l], this.dln1_g[l]);
-      step(this.ln1_b[l], this.dln1_b[l]);
-      step(this.wqkv[l], this.dwqkv[l]);
-      step(this.wo[l], this.dwo[l]);
-      step(this.ln2_g[l], this.dln2_g[l]);
-      step(this.ln2_b[l], this.dln2_b[l]);
-      step(this.wup[l], this.dwup[l]);
-      step(this.wdown[l], this.dwdown[l]);
+      adamStep(this.ln1_g[l], this.dln1_g[l], this.mln1_g[l], this.vln1_g[l]);
+      adamStep(this.ln1_b[l], this.dln1_b[l], this.mln1_b[l], this.vln1_b[l]);
+      adamStep(this.wqkv[l], this.dwqkv[l], this.mwqkv[l], this.vwqkv[l]);
+      adamStep(this.wo[l], this.dwo[l], this.mwo[l], this.vwo[l]);
+      adamStep(this.ln2_g[l], this.dln2_g[l], this.mln2_g[l], this.vln2_g[l]);
+      adamStep(this.ln2_b[l], this.dln2_b[l], this.mln2_b[l], this.vln2_b[l]);
+      adamStep(this.wup[l], this.dwup[l], this.mwup[l], this.vwup[l]);
+      adamStep(this.wdown[l], this.dwdown[l], this.mwdown[l], this.vwdown[l]);
     }
-    step(this.lnf_g, this.dlnf_g);
-    step(this.lnf_b, this.dlnf_b);
-    step(this.wlm, this.dwlm);
+    adamStep(this.lnf_g, this.dlnf_g, this.mlnf_g, this.vlnf_g);
+    adamStep(this.lnf_b, this.dlnf_b, this.mlnf_b, this.vlnf_b);
+    adamStep(this.wlm, this.dwlm, this.mwlm, this.vwlm);
   }
 
   // ── Training forward ───────────────────────────────────
@@ -680,7 +748,7 @@ class Transformer {
       if (pos >= this.maxSeqLen) break;
       const logits = this.forwardStep(last, pos, kvCaches);
       last = sample(logits, temperature);
-      if (last === 0) break; // treat 0 as EOS if desired
+      if (last === 0) break;
       out.push(last);
       pos++;
     }
@@ -763,6 +831,9 @@ class Transformer {
       this.nHeads,
       this.dFF,
       this.maxSeqLen,
+      this.beta1,
+      this.beta2,
+      this.eps,
     );
     m.wte.set(this.wte);
     m.wpe.set(this.wpe);

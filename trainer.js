@@ -1,4 +1,3 @@
-//trainer.js
 const { Worker } = require('worker_threads');
 const os = require('os');
 const path = require('path');
@@ -30,6 +29,9 @@ class ParallelTrainer {
         nHeads: this.model.nHeads,
         dFF: this.model.dFF,
         maxSeqLen: this.model.maxSeqLen,
+        beta1: this.model.beta1,
+        beta2: this.model.beta2,
+        eps: this.model.eps,
       };
 
       for (let i = 0; i < this.numWorkers; i++) {
@@ -104,6 +106,13 @@ class ParallelTrainer {
 
     this.model.clipGrads();
     this.model.update();
+
+    // Broadcast updated weights to all workers for next batch
+    const weights = this.model._allWeights();
+    for (const w of this.workers) {
+      w.worker.postMessage({ type: 'weights', weights });
+    }
+
     return totalLoss / totalCount;
   }
 

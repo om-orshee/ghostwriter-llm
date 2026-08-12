@@ -1,4 +1,3 @@
-//train_worker.js
 const { parentPort } = require('worker_threads');
 const Transformer = require('./transformer');
 
@@ -41,6 +40,9 @@ parentPort.on('message', (msg) => {
       msg.config.nHeads,
       msg.config.dFF,
       msg.config.maxSeqLen,
+      msg.config.beta1,
+      msg.config.beta2,
+      msg.config.eps,
     );
     const buf = Buffer.from(
       msg.weights.buffer,
@@ -49,6 +51,11 @@ parentPort.on('message', (msg) => {
     );
     model._setAllWeights(buf);
     parentPort.postMessage({ type: 'ready' });
+  }
+
+  if (msg.type === 'weights') {
+    if (!model) return;
+    model._setAllWeights(msg.weights);
   }
 
   if (msg.type === 'compute') {
