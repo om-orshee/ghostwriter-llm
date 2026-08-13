@@ -25,16 +25,16 @@ node server.js
 # 3. Train tokenizer + base model
 curl -X POST http://localhost:3000/train \
   -H "Content-Type: application/json" \
-  -d '{"file":"./training/corpus_small.txt","epochs":5,"batchSize":16}'
+  -d '{"file":"./output/training/base_corpus.txt","epochs":5,"batchSize":16}'
 
 # 4. Train personalities
 curl -X POST http://localhost:3000/train-ghost \
   -H "Content-Type: application/json" \
-  -d '{"ghost":"Vera","file":"./training/vera_corpus.txt","epochs":5}'
+  -d '{"ghost":"Vera","file":"./output/training/vera_corpus.txt","epochs":5}'
 
 curl -X POST http://localhost:3000/train-ghost \
   -H "Content-Type: application/json" \
-  -d '{"ghost":"Jax","file":"./training/jax_corpus.txt","epochs":5}'
+  -d '{"ghost":"Jax","file":"./output/training/jax_corpus.txt","epochs":5}'
 
 # 5. Speak
 curl -X POST http://localhost:3000/speak \

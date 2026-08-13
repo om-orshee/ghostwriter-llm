@@ -1,16 +1,9 @@
 //.gitignore
+# output
+output/*
+
 # Training data (large, regenerable)
 training/*.txt
-training/tokenizer.json
-
-# checkpoints (large, regenerable)
-checkpoints/*.bin
-checkpoints/*.json
-
-# Model weights (large, trained artifacts)
-weights.bin
-ghosts/*.bin
-ghosts/*.json
 
 # Node
 node_modules/

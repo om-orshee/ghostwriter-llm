@@ -7,12 +7,11 @@
     "start": "node server.js",
     "generate": "node generate_synthetic_data.js",
     "download": "node download_books.js",
-    "clean": "rm -f weights.bin && rm -rf checkpoints ghosts",
+    "clean": "rm -f output/weights.bin && rm -rf output/checkpoints output/ghosts",
     "clean-start": "npm run clean && npm start"
   },
   "keywords": [
     "llm",
-    "lstm",
     "neural-network",
     "ai",
     "chatbot",

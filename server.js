@@ -26,12 +26,19 @@ const { BPETokenizer } = require('./tokenizer');
 const { Ghost } = require('./ghost');
 const { ParallelTrainer } = require('./trainer');
 
-const TOKENIZER_PATH = './training/tokenizer.json';
-const BASE_WEIGHTS_PATH = './weights.bin';
-const GHOST_DIR = './ghosts';
-const CHECKPOINT_DIR = './checkpoints';
+// ── Output directory layout ────────────────────────────
+const OUTPUT_DIR = './output';
+const TOKENIZER_PATH = `${OUTPUT_DIR}/tokenizer.json`;
+const BASE_WEIGHTS_PATH = `${OUTPUT_DIR}/weights.bin`;
+const GHOST_DIR = `${OUTPUT_DIR}/ghosts`;
+const CHECKPOINT_DIR = `${OUTPUT_DIR}/checkpoints`;
 const CHECKPOINT_STATE = `${CHECKPOINT_DIR}/base_training_state.json`;
 const CHECKPOINT_WEIGHTS = `${CHECKPOINT_DIR}/base_weights_checkpoint.bin`;
+
+// Ensure output tree exists
+for (const dir of [OUTPUT_DIR, GHOST_DIR, CHECKPOINT_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
 
 // ── Env toggles ────────────────────────────────────────
 const TEST_MODE = process.env.TEST_MODE !== 'false';
@@ -91,7 +98,6 @@ const baseTrainer = new ParallelTrainer(
 
 // ── Checkpoint helpers ─────────────────────────────────
 function saveCheckpoint(state) {
-  if (!fs.existsSync(CHECKPOINT_DIR)) fs.mkdirSync(CHECKPOINT_DIR);
   fs.writeFileSync(CHECKPOINT_STATE, JSON.stringify(state, null, 2));
   baseModel.saveWeights(CHECKPOINT_WEIGHTS);
 }
@@ -121,8 +127,6 @@ function deleteCheckpoint() {
 
 // ── Init ghosts ────────────────────────────────────────
 const ghosts = new Map();
-
-if (!fs.existsSync(GHOST_DIR)) fs.mkdirSync(GHOST_DIR);
 
 try {
   const files = fs.readdirSync(GHOST_DIR).filter((f) => f.endsWith('.json'));

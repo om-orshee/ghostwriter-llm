@@ -325,24 +325,30 @@ function generateJaxCorpus(turns = 2000) {
 // ── RUN ────────────────────────────────────────────────
 console.log('Generating token-friendly training data...\n');
 
-if (!fs.existsSync('./training')) fs.mkdirSync('./training');
+const TRAINING_DIR = './output/training';
+if (!fs.existsSync(TRAINING_DIR))
+  fs.mkdirSync(TRAINING_DIR, { recursive: true });
 
 const base = generateBaseCorpus(4000);
-fs.writeFileSync('./training/base_corpus.txt', base);
+fs.writeFileSync(`${TRAINING_DIR}/base_corpus.txt`, base);
 console.log(`base_corpus.txt     : ${base.length.toLocaleString()} chars`);
 
 const vera = generateVeraCorpus(2000);
-fs.writeFileSync('./training/vera_corpus.txt', vera);
+fs.writeFileSync(`${TRAINING_DIR}/vera_corpus.txt`, vera);
 console.log(`vera_corpus.txt     : ${vera.length.toLocaleString()} chars`);
 
 const jax = generateJaxCorpus(2000);
-fs.writeFileSync('./training/jax_corpus.txt', jax);
+fs.writeFileSync(`${TRAINING_DIR}/jax_corpus.txt`, jax);
 console.log(`jax_corpus.txt      : ${jax.length.toLocaleString()} chars`);
 
 console.log('\nDone. Training order:');
-console.log('  1. POST /train      with base_corpus.txt');
-console.log('  2. POST /train-ghost with vera_corpus.txt (ghost: Vera)');
-console.log('  3. POST /train-ghost with jax_corpus.txt  (ghost: Jax)');
+console.log('  1. POST /train      with output/training/base_corpus.txt');
+console.log(
+  '  2. POST /train-ghost with output/training/vera_corpus.txt (ghost: Vera)',
+);
+console.log(
+  '  3. POST /train-ghost with output/training/jax_corpus.txt  (ghost: Jax)',
+);
 console.log(
   '\nTip: <|endoftext|> markers separate conversations so the tokenizer',
 );
