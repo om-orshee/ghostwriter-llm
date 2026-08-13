@@ -30,6 +30,8 @@ class Transformer {
     beta1 = 0.9,
     beta2 = 0.999,
     eps = 1e-8,
+    weightDecay = 0.01,
+    gradClipNorm = 1.0,
   ) {
     this.lr = learningRate;
     this.vocabSize = vocabSize;
@@ -42,6 +44,8 @@ class Transformer {
     this.beta1 = beta1;
     this.beta2 = beta2;
     this.eps = eps;
+    this.weightDecay = weightDecay;
+    this.gradClipNorm = gradClipNorm;
     this.t = 0;
 
     // Embeddings
@@ -151,22 +155,24 @@ class Transformer {
   }
 
   initWeights() {
+    // GPT-2 style: small std for all non-embedding weights
     const sEmbed = Math.sqrt(2.0 / this.vocabSize);
     for (let i = 0; i < this.wte.length; i++)
       this.wte[i] = (Math.random() * 2 - 1) * sEmbed;
     for (let i = 0; i < this.wpe.length; i++)
       this.wpe[i] = (Math.random() * 2 - 1) * 0.01;
 
+    const sW = 0.02; // GPT-2 std for linear layers
     for (let l = 0; l < this.nLayers; l++) {
       this.ln1_g[l].fill(1.0);
       this.ln2_g[l].fill(1.0);
-      this.wqkv[l].set(randnInit(this.wqkv[l].length, this.dModel));
-      this.wo[l].set(randnInit(this.wo[l].length, this.dModel));
-      this.wup[l].set(randnInit(this.wup[l].length, this.dModel));
-      this.wdown[l].set(randnInit(this.wdown[l].length, this.dFF));
+      this.wqkv[l].set(randnInit(this.wqkv[l].length, this.dModel, sW));
+      this.wo[l].set(randnInit(this.wo[l].length, this.dModel, sW));
+      this.wup[l].set(randnInit(this.wup[l].length, this.dModel, sW));
+      this.wdown[l].set(randnInit(this.wdown[l].length, this.dFF, sW));
     }
     this.lnf_g.fill(1.0);
-    this.wlm.set(randnInit(this.wlm.length, this.dModel));
+    this.wlm.set(randnInit(this.wlm.length, this.dModel, sW));
   }
 
   paramCount() {
@@ -209,7 +215,8 @@ class Transformer {
     this.dwlm.fill(0);
   }
 
-  clipGrads(max = 1.0) {
+  // Global gradient norm clipping (prevents NaN from one bad step)
+  clipGrads() {
     const all = [
       this.dwte,
       this.dwpe,
@@ -225,14 +232,23 @@ class Transformer {
       this.dlnf_b,
       this.dwlm,
     ];
+    let globalNormSq = 0;
     for (const g of all) {
       for (let i = 0; i < g.length; i++) {
-        if (g[i] > max) g[i] = max;
-        else if (g[i] < -max) g[i] = -max;
+        globalNormSq += g[i] * g[i];
+      }
+    }
+    const globalNorm = Math.sqrt(globalNormSq);
+    const scale =
+      globalNorm > this.gradClipNorm ? this.gradClipNorm / globalNorm : 1.0;
+    if (scale < 1.0) {
+      for (const g of all) {
+        for (let i = 0; i < g.length; i++) g[i] *= scale;
       }
     }
   }
 
+  // AdamW: weight decay applied directly to weights, not gradients
   update() {
     this.t++;
     const b1t = Math.pow(this.beta1, this.t);
@@ -240,6 +256,7 @@ class Transformer {
 
     const adamStep = (w, dw, m, v) => {
       for (let i = 0; i < w.length; i++) {
+        w[i] *= 1 - this.lr * this.weightDecay;
         m[i] = this.beta1 * m[i] + (1 - this.beta1) * dw[i];
         v[i] = this.beta2 * v[i] + (1 - this.beta2) * dw[i] * dw[i];
         const mHat = m[i] / (1 - b1t);
@@ -390,6 +407,7 @@ class Transformer {
       cache: {
         T,
         input,
+        target,
         layers: layerCaches,
         finalX: x,
         lnF,
@@ -400,7 +418,7 @@ class Transformer {
 
   // ── Backward ───────────────────────────────────────────
   backward(cache) {
-    const { T, input, layers, finalX, lnF, logits } = cache;
+    const { T, input, target, layers, finalX, lnF, logits } = cache;
     const { vocabSize, dModel, nLayers, nHeads, dHead, dFF } = this;
 
     // dLogits
@@ -408,6 +426,7 @@ class Transformer {
     for (let t = 0; t < T; t++) {
       const slice = crossEntropyBackward(
         logits.subarray(t * vocabSize, (t + 1) * vocabSize),
+        target[t],
       );
       for (let v = 0; v < vocabSize; v++) {
         dLogits[t * vocabSize + v] = slice[v] / T;
@@ -576,6 +595,12 @@ class Transformer {
     const count = inputs.length;
     for (let b = 0; b < count; b++) {
       const { loss, cache } = this.forward(inputs[b], targets[b]);
+      if (!Number.isFinite(loss)) {
+        console.error(
+          `[TRAINER] NaN/Inf loss at batch item ${b}; skipping update`,
+        );
+        return NaN;
+      }
       this.backward(cache);
       totalLoss += loss;
     }
@@ -649,8 +674,9 @@ class Transformer {
           let sum = 0;
           const out = new Float32Array(scores.length);
           for (let i = 0; i < scores.length; i++) {
-            out[i] = Math.exp(scores[i] - max);
-            sum += out[i];
+            const e = Math.exp(scores[i] - max);
+            out[i] = e;
+            sum += e;
           }
           for (let i = 0; i < scores.length; i++) out[i] /= sum;
           return out;
@@ -833,6 +859,8 @@ class Transformer {
       this.beta1,
       this.beta2,
       this.eps,
+      this.weightDecay,
+      this.gradClipNorm,
     );
     m.wte.set(this.wte);
     m.wpe.set(this.wpe);

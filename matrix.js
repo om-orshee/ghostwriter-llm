@@ -1,5 +1,5 @@
-//matrix.js
-// matrix.js — Tensor primitives for a small transformer in pure JS
+// matrix.js
+// Tensor primitives for a small transformer in pure JS
 // All ops use Float32Array, row-major layout.
 
 function zeros(n) {
@@ -12,9 +12,9 @@ function randn(n, scale = 1.0) {
   return a;
 }
 
-// Xavier / He style init scaled by fan-in
-function randnInit(n, fanIn) {
-  const scale = Math.sqrt(2.0 / fanIn);
+// Xavier / He style init scaled by fan-in, or explicit std
+function randnInit(n, fanIn, std) {
+  const scale = std !== undefined ? std : Math.sqrt(2.0 / fanIn);
   return randn(n, scale);
 }
 
@@ -147,6 +147,9 @@ function layerNormForward(x, gamma, beta, eps = 1e-5) {
 }
 
 // LayerNorm backward. Returns { dx, dgamma, dbeta }
+// y = gamma * xhat + beta,  xhat = (x - mean) / std
+// dL/dxhat = dL/dy * gamma
+// dL/dx_j = (1/std) * [dL/dxhat_j - mean(dL/dxhat) - xhat_j * mean(dL/dxhat * xhat)]
 function layerNormBackward(dy, x, gamma, mean, rstd) {
   const N = mean.length;
   const D = gamma.length;
@@ -158,26 +161,31 @@ function layerNormBackward(dy, x, gamma, mean, rstd) {
     const base = i * D;
     const m = mean[i];
     const rs = rstd[i];
+    const invD = 1.0 / D;
 
-    let dvar = 0;
-    let dmean = 0;
+    let sum_d_xhat = 0;
+    let sum_d_xhat_xhat = 0;
 
+    // First pass: compute xhat, dgamma, dbeta, and accumulators
     for (let j = 0; j < D; j++) {
-      const norm = (x[base + j] - m) * rs;
-      dbeta[j] += dy[base + j];
-      dgamma[j] += dy[base + j] * norm;
+      const xhat = (x[base + j] - m) * rs;
+      const d_xhat = dy[base + j] * gamma[j];
 
-      const dnorm = dy[base + j] * gamma[j];
-      dx[base + j] = dnorm * rs;
-      dvar += dnorm * (x[base + j] - m);
-      dmean += dnorm;
+      dbeta[j] += dy[base + j];
+      dgamma[j] += dy[base + j] * xhat;
+
+      sum_d_xhat += d_xhat;
+      sum_d_xhat_xhat += d_xhat * xhat;
     }
 
-    dvar *= -0.5 * rs * rs * rs;
-    dmean *= -rs;
+    const mean_d_xhat = sum_d_xhat * invD;
+    const mean_d_xhat_xhat = sum_d_xhat_xhat * invD;
 
+    // Second pass: compute dx
     for (let j = 0; j < D; j++) {
-      dx[base + j] += (dvar * 2 * (x[base + j] - m)) / D + dmean / D;
+      const xhat = (x[base + j] - m) * rs;
+      const d_xhat = dy[base + j] * gamma[j];
+      dx[base + j] = rs * (d_xhat - mean_d_xhat - xhat * mean_d_xhat_xhat);
     }
   }
   return { dx, dgamma, dbeta };
